@@ -1,0 +1,5 @@
+/target
+# private: contains SSH host details
+/diva-mod-manager-prompt.md
+/divamodarchive.png
+dist/

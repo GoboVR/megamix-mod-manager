@@ -1,0 +1,27 @@
+[package]
+name = "megamix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["rar"]
+# RAR archive support (UnRAR, C++). Off for MinGW/musl cross builds.
+rar = ["megamix-core/rar"]
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.9", features = ["derive", "env"] }
+ctrlc = "3.5.3"
+megamix-core = { path = "../megamix-core", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
+[build-dependencies]
+winresource = "0.1.34"

@@ -1,0 +1,2544 @@
+import { Button, LineEdit, ListView, ScrollView, Palette, AboutSlint, ProgressIndicator, ComboBox } from "std-widgets.slint";
+
+export struct ModRow {
+    folder: string,
+    name: string,
+    version: string,
+    author: string,
+    description: string,
+    enabled: bool,
+    loaded: bool,
+    priority: int,
+    broken: bool,
+    error: string,
+    files: string,
+    // "DMA" | "GB" | "" (not linked to a mod page)
+    source: string,
+    link: string,
+    update: bool,
+    update-text: string,
+    // Sorting pin: 0 none, 1 top, 2 bottom
+    pin: int,
+}
+
+export struct CheckRow {
+    level: int, // 0 ok, 1 info, 2 warn, 3 error
+    summary: string,
+    details: string,
+    fix: string,
+}
+
+export struct PairRow {
+    winner: string,
+    loser: string,
+    files: int,
+}
+
+export struct FileRow {
+    path: string,
+    winner: string,
+    losers: string,
+}
+
+export struct BackupRow {
+    id: string,
+    reason: string,
+    when: string,
+}
+
+export struct BrowseRow {
+    name: string,
+    // 0 = parent folder, 1 = folder, 2 = archive
+    kind: int,
+    size: string,
+    path: string,
+}
+
+// A mod on DivaModArchive / GameBanana.
+export struct RemoteRow {
+    key: string, // "dma:243"
+    name: string,
+    meta: string,
+    stats: string,
+    site: string, // "DMA" | "GB"
+    thumb: image,
+    has-thumb: bool,
+    // "" | "Installed" | "Update"
+    installed: string,
+    explicit: bool,
+}
+
+// One of a mod's own settings.
+export struct SettingRow {
+    path: string,
+    // 0 on/off, 1 whole number, 2 number, 3 text, 4 other (read-only)
+    kind: int,
+    value: string,
+    comment: string,
+}
+
+// A requirement of the mod shown on Get mods.
+export struct ReqRow {
+    name: string,
+    note: string,
+    ok: bool,
+    optional: bool,
+    // Not on a mod site: "Open" in the browser instead of "Show".
+    web: bool,
+}
+
+export struct FileChoice {
+    name: string,
+    detail: string,
+    // "" = Install, "Open" = browser, "Show" = open its page here
+    action: string,
+}
+
+export struct LoadoutRow {
+    name: string,
+    summary: string,
+}
+
+global Theme {
+    out property <length> row-height: 68px;
+    out property <length> radius: 10px;
+    out property <color> ok: #3fb950;
+    out property <color> info: #58a6ff;
+    out property <color> warn: #d29922;
+    out property <color> error: #f85149;
+    out property <color> muted: Palette.foreground.transparentize(0.45);
+}
+
+component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> tone;
+    border-radius: 6px;
+    background: tone.transparentize(0.82);
+    height: 28px;
+    width: t.preferred-width + 18px;
+    t := Text {
+        text: root.text;
+        color: root.tone;
+        font-size: 13px;
+        font-weight: 700;
+    }
+}
+
+component Toggle inherits Rectangle {
+    in property <bool> on;
+    in property <bool> active: true;
+    callback clicked;
+    width: 56px;
+    height: 32px;
+    border-radius: 16px;
+    background: !active ? Palette.border.transparentize(0.5) : on ? Palette.accent-background : Palette.alternate-background;
+    border-width: 1px;
+    border-color: Palette.border;
+    Rectangle {
+        width: 26px;
+        height: 26px;
+        y: 3px;
+        x: root.on ? root.width - self.width - 3px : 3px;
+        border-radius: 13px;
+        background: root.on ? #ffffff : Palette.foreground.transparentize(0.3);
+        animate x { duration: 120ms; }
+    }
+    TouchArea {
+        enabled: root.active;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component NavButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    in property <bool> available: true;
+    // Short window (big scaling, small screens): tighter rows.
+    in property <bool> compact;
+    callback clicked;
+    height: compact ? 40px : 56px;
+    border-radius: Theme.radius;
+    background: active ? Palette.accent-background : ta.has-hover && available ? Palette.alternate-background : transparent;
+    ta := TouchArea {
+        enabled: root.available;
+        clicked => {
+            root.clicked();
+        }
+    }
+    Text {
+        x: 18px;
+        text: root.text;
+        font-size: root.compact ? 16px : 18px;
+        font-weight: root.active ? 700 : 500;
+        vertical-alignment: center;
+        color: !root.available ? Theme.muted : root.active ? Palette.accent-foreground : Palette.foreground;
+    }
+}
+
+component BigButton inherits Button {
+    min-height: 48px;
+}
+
+component Card inherits Rectangle {
+    border-radius: Theme.radius;
+    background: Palette.alternate-background;
+    border-width: 1px;
+    border-color: Palette.border;
+}
+
+// A scrolling column (for short lists) that keeps row `focus-index` (all
+// rows `row-h` tall) on screen.
+component PadListView inherits ScrollView {
+    in property <int> focus-index: -1;
+    in property <length> row-h: 64px;
+    VerticalLayout {
+        alignment: start;
+        padding-right: 16px;
+        @children
+    }
+    changed focus-index => {
+        if (self.focus-index < 0) {
+            return;
+        }
+        if (self.focus-index * self.row-h + self.content-y < 0) {
+            self.content-y = -self.focus-index * self.row-h;
+        }
+        if ((self.focus-index + 1) * self.row-h + self.content-y > self.visible-height) {
+            self.content-y = self.visible-height - (self.focus-index + 1) * self.row-h;
+        }
+    }
+}
+
+// The conflict file list (can be thousands of rows, so a real ListView),
+// scrolled to row `focus-index` by the controller.
+component ConflictFileList {
+    in property <[FileRow]> files;
+    in property <int> focus-index: -1;
+    changed focus-index => {
+        if (self.focus-index < 0) {
+            return;
+        }
+        if (self.focus-index * 50px + lv.content-y < 0) {
+            lv.content-y = -self.focus-index * 50px;
+        }
+        if ((self.focus-index + 1) * 50px + lv.content-y > lv.visible-height) {
+            lv.content-y = lv.visible-height - (self.focus-index + 1) * 50px;
+        }
+    }
+    lv := ListView {
+        width: 100%;
+        height: 100%;
+        for f in root.files: Rectangle {
+            height: 50px;
+            VerticalLayout {
+                padding-left: 8px;
+                alignment: center;
+                Text {
+                    text: f.path;
+                    overflow: elide;
+                }
+                Text {
+                    text: "used: " + f.winner + "    ignored: " + f.losers;
+                    font-size: 13px;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+// A ScrollView scrolled in steps by the controller.
+component PadScrollView inherits ScrollView {
+    in property <int> step;
+    changed step => {
+        self.content-y = max(min(0px, self.visible-height - self.content-height), -self.step * 120px);
+    }
+}
+
+component ModRowView inherits Rectangle {
+    in property <ModRow> m;
+    in property <bool> selected;
+    in property <bool> moving;
+    callback select();
+    callback toggle();
+    height: Theme.row-height;
+    border-radius: Theme.radius;
+    background: moving ? Palette.accent-background.transparentize(0.35) : selected ? Palette.accent-background.transparentize(0.7) : ta.has-hover ? Palette.alternate-background : transparent;
+    border-width: moving ? 2px : 0px;
+    border-color: Palette.accent-background;
+    ta := TouchArea {
+        clicked => {
+            root.select();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 14px;
+        spacing: 14px;
+        Text {
+            width: 34px;
+            text: m.priority > 0 ? "\{m.priority}" : "–";
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            font-size: 16px;
+            color: Theme.muted;
+        }
+        VerticalLayout {
+            alignment: center;
+            Toggle {
+                on: m.enabled;
+                active: !m.broken;
+                clicked => {
+                    root.select();
+                    root.toggle();
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            Text {
+                text: m.name;
+                font-size: 18px;
+                font-weight: 600;
+                overflow: elide;
+                color: m.enabled ? Palette.foreground : Theme.muted;
+            }
+            if m.version != "" || m.author != "": Text {
+                text: (m.version != "" ? "v" + m.version : "") + (m.version != "" && m.author != "" ? "  ·  " : "") + m.author;
+                font-size: 13px;
+                overflow: elide;
+                color: Theme.muted;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            if root.moving: Badge {
+                text: "MOVING";
+                tone: Palette.accent-background;
+            }
+            if m.broken: Badge {
+                text: "BROKEN";
+                tone: Theme.error;
+            }
+            if !m.broken && m.enabled && !m.loaded: Badge {
+                text: "NOT LOADED";
+                tone: Theme.warn;
+            }
+        }
+        if m.update || m.source != "": VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            if m.update: Badge {
+                text: "UPDATE";
+                tone: Theme.warn;
+            }
+            if m.source != "": Badge {
+                text: m.source;
+                tone: m.source == "DMA" ? Theme.info : Theme.muted;
+            }
+        }
+    }
+}
+
+component ConfirmOverlay inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <string> accept-text: "OK";
+    // Optional second action (e.g. "Keep both"); hidden when empty.
+    in property <string> alt-text;
+    in property <string> warning;
+    callback accepted();
+    callback alt-accepted();
+    callback cancelled();
+    background: #000000a0;
+    TouchArea {
+        clicked => {
+            root.cancelled();
+        }
+    }
+    Card {
+        width: min(560px, root.width - 40px);
+        height: inner.preferred-height;
+        background: Palette.background;
+        TouchArea { }
+        inner := VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text {
+                text: root.title;
+                font-size: 22px;
+                font-weight: 700;
+                wrap: word-wrap;
+            }
+            if root.warning != "": Text {
+                text: root.warning;
+                font-size: 16px;
+                font-weight: 600;
+                color: Theme.error;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.body;
+                font-size: 16px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 12px;
+                BigButton {
+                    text: "Cancel";
+                    clicked => {
+                        root.cancelled();
+                    }
+                }
+                if root.alt-text != "": BigButton {
+                    text: root.alt-text;
+                    clicked => {
+                        root.alt-accepted();
+                    }
+                }
+                BigButton {
+                    text: root.accept-text;
+                    primary: true;
+                    clicked => {
+                        root.accepted();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Results of the Get mods page (84px rows), scrolled to `selected`.
+component RemoteList {
+    in property <[RemoteRow]> results;
+    in property <int> selected: -1;
+    callback clicked(int);
+    callback activated(int);
+    changed selected => {
+        if (self.selected < 0) {
+            return;
+        }
+        if (self.selected * 84px + lv.content-y < 0) {
+            lv.content-y = -self.selected * 84px;
+        }
+        if ((self.selected + 1) * 84px + lv.content-y > lv.visible-height) {
+            lv.content-y = lv.visible-height - (self.selected + 1) * 84px;
+        }
+    }
+    lv := ListView {
+        width: 100%;
+        height: 100%;
+        for r[i] in root.results: Rectangle {
+            height: 84px;
+            border-radius: Theme.radius;
+            background: i == root.selected ? Palette.accent-background.transparentize(0.75) : gta.has-hover ? Palette.alternate-background : transparent;
+            gta := TouchArea {
+                clicked => {
+                    root.clicked(i);
+                }
+                double-clicked => {
+                    root.clicked(i);
+                    root.activated(i);
+                }
+            }
+            HorizontalLayout {
+                padding: 6px;
+                spacing: 12px;
+                Rectangle {
+                    width: 128px;
+                    height: 72px;
+                    border-radius: 6px;
+                    clip: true;
+                    background: Palette.alternate-background;
+                    if r.has-thumb: Image {
+                        width: 100%;
+                        height: 100%;
+                        source: r.thumb;
+                        image-fit: cover;
+                    }
+                    if r.explicit: Rectangle {
+                        x: 4px;
+                        y: 4px;
+                        width: 34px;
+                        height: 18px;
+                        border-radius: 4px;
+                        background: Theme.error;
+                        Text {
+                            text: "18+";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: white;
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: r.name;
+                            font-size: 16px;
+                            font-weight: 600;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if r.installed != "": Badge {
+                            text: r.installed;
+                            tone: r.installed == "Update" ? Theme.warn : Theme.ok;
+                        }
+                        Badge {
+                            text: r.site;
+                            tone: r.site == "DMA" ? Theme.info : Theme.warn;
+                        }
+                    }
+                    Text {
+                        text: r.meta;
+                        font-size: 13px;
+                        color: Theme.muted;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: r.stats;
+                        font-size: 13px;
+                        color: Theme.muted;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+}
+
+component PageTitle inherits HorizontalLayout {
+    in property <string> text;
+    spacing: 12px;
+    Text {
+        text: root.text;
+        font-size: 26px;
+        font-weight: 700;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+    }
+    @children
+}
+
+export component AppWindow inherits Window {
+    title: "Mega Mix+ Mod Manager";
+    // Not enough height for the full-size sidebar.
+    property <bool> compact: self.height < 740px;
+    icon: @image-url("../../../assets/icon-256.png");
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 760px;
+    min-height: 460px;
+    background: Palette.background;
+    default-font-size: 16px;
+
+    // 0 mods, 1 conflicts, 2 loadouts, 3 backups, 4 doctor, 5 settings
+    in-out property <int> page: 0;
+    in property <bool> game-ok;
+    in property <string> game-path;
+    in property <string> status-text;
+    in property <bool> status-error;
+    in property <bool> can-undo;
+    in property <bool> busy;
+    in property <string> loader-warning;
+
+    in property <[ModRow]> mods;
+    in-out property <int> selected: -1;
+    changed selected => {
+        root.mod-selected(root.sel-folder());
+    }
+    callback mod-selected(string);
+    in property <[SettingRow]> mod-settings;
+    callback set-setting(string, string, string); // folder, path, value
+    callback remove-mod(string);
+    callback auto-sort();
+    callback set-pin(string, int); // folder, 0 none / 1 top / 2 bottom
+    in property <string> removed-summary;
+    callback purge-removed();
+    in property <int> mod-count;
+    in property <int> loaded-count;
+
+    in property <[CheckRow]> checks;
+    in property <string> doctor-summary;
+    // ARM fix card on the Doctor page.
+    in property <bool> armfix-visible;
+    in property <string> armfix-title;
+    in property <string> armfix-text;
+    in property <string> armfix-action;
+    in property <[PairRow]> pairs;
+    in property <[FileRow]> conflict-files;
+    in property <string> conflicts-summary;
+    in property <[BackupRow]> backups;
+    in property <[LoadoutRow]> loadouts;
+    in-out property <string> game-dir-input;
+    in property <string> settings-message;
+
+    in-out property <bool> confirm-visible;
+    in property <string> confirm-alt;
+
+    // Install page
+    in property <string> browse-dir;
+    in property <[BrowseRow]> browse-entries;
+    in property <string> browse-message;
+    in-out property <string> install-path-input;
+    in property <bool> install-running;
+    in property <float> install-progress;
+    in property <string> install-title;
+    in property <string> install-detail;
+    // Get mods page (7)
+    in-out property <string> get-query;
+    in-out property <int> get-source; // 0 all, 1 DivaModArchive, 2 GameBanana
+    in-out property <int> get-kind; // index into kind-names
+    in-out property <int> get-sort; // index into sort-names
+    out property <[string]> source-names: ["All sites", "DivaModArchive", "GameBanana"];
+    out property <[string]> kind-names: ["Any type", "Songs", "Covers", "Modules", "UI", "Plugins", "Other"];
+    out property <[string]> sort-names: ["Best match", "Newest", "Recently updated", "Most downloaded", "Most liked"];
+    in property <[RemoteRow]> get-results;
+    in-out property <int> get-selected: -1;
+    in property <bool> get-loading;
+    in property <bool> get-more;
+    in property <string> get-message;
+    in property <bool> det-visible;
+    in property <bool> det-loading;
+    in property <string> det-name;
+    in property <string> det-meta;
+    in property <string> det-stats;
+    in property <string> det-desc;
+    in property <string> det-also;
+    in property <string> det-installed;
+    in property <string> det-site;
+    in property <image> det-image;
+    in property <bool> det-has-image;
+    in property <int> det-image-count;
+    in property <int> det-image-index;
+    in property <[FileChoice]> det-files;
+    in property <[ReqRow]> det-requires;
+    in property <[string]> det-incompat;
+    callback get-open-req(int);
+    // Red text in the confirm dialog (requirements/incompatibilities).
+    in-out property <string> confirm-warning;
+    in-out property <bool> files-visible;
+    in-out property <int> files-index;
+    in property <int> update-count;
+    in property <bool> checking-updates;
+    in-out property <string> link-input;
+    callback check-updates();
+    callback update-mod(string);
+    callback update-all();
+    callback link-mod(string, string);
+    callback unlink-mod(string);
+    callback open-mod-page(string);
+    callback get-search();
+    callback get-load-more();
+    callback get-select(int);
+    callback get-install(int); // index into det-files
+    callback get-image(int); // -1 previous, +1 next
+    callback get-open-page();
+    callback get-open-also();
+    // Controller "pick up" mode on the Mods page.
+    in-out property <bool> move-mode;
+    // Highlighted row (Loadouts, Backups) or scroll step (Conflicts, Doctor).
+    in-out property <int> pad-index;
+    // 0 = follow system, 1 = dark, 2 = light.
+    in-out property <int> theme;
+    changed theme => {
+        Palette.color-scheme = root.theme == 1 ? ColorScheme.dark : root.theme == 2 ? ColorScheme.light : ColorScheme.unknown;
+    }
+    init => {
+        Palette.color-scheme = root.theme == 1 ? ColorScheme.dark : root.theme == 2 ? ColorScheme.light : ColorScheme.unknown;
+    }
+    callback theme-chosen(int);
+    // 0 = DivaModArchive, 1 = GameBanana
+    in-out property <int> prefer-site;
+    callback prefer-site-chosen(int);
+    // Updates of the app itself ("" = none known).
+    in property <string> app-update-version;
+    in property <string> app-version;
+    in property <string> app-update-note;
+    in-out property <bool> app-updates-on: true;
+    callback app-update-clicked();
+    callback app-updates-toggled(bool);
+    callback app-update-check-now();
+    in property <bool> links-ours;
+    callback register-links();
+    // A controller has been used: show button hints.
+    in-out property <bool> pad-used;
+    in property <string> confirm-title;
+    in property <string> confirm-body;
+    in property <string> confirm-accept;
+
+    callback search(string);
+    callback toggle(string);
+    callback move(string, string); // folder, "top" | "up" | "down" | "bottom"
+    callback undo();
+    callback refresh();
+    callback sync-priority();
+    callback enable-loader();
+    callback run-doctor();
+    callback armfix-clicked();
+    callback scan-conflicts();
+    callback save-loadout(string);
+    callback apply-loadout(string);
+    callback delete-loadout(string);
+    callback restore-backup(string);
+    callback use-game-dir(string);
+    callback detect-game-dir();
+    callback page-changed(int);
+    callback confirm-accepted();
+    callback save-loadout-auto();
+    callback confirm-alt-accepted();
+    // Dialog dismissed: forget the pending action (deletes a waiting download).
+    callback confirm-cancelled();
+    callback browse-activate(string, int); // path, kind
+    callback browse-up();
+    callback browse-go(string); // "downloads" | "home"
+    callback install-from-path(string);
+    callback install-cancel();
+    callback play();
+    // Asked before acting on a navigation key; false = duplicate of a
+    // controller press (Steam's desktop layout sends both).
+    callback key-allowed() -> bool;
+
+    function go(p: int) {
+        root.page = p;
+        root.pad-index = 0;
+        root.page-changed(p);
+    }
+
+    public function select-remote(i: int) {
+        if (root.get-results.length == 0) {
+            return;
+        }
+        if (i >= root.get-results.length && root.get-more && !root.get-loading) {
+            root.get-load-more();
+        }
+        root.get-selected = max(0, min(root.get-results.length - 1, i));
+        root.get-select(root.get-selected);
+    }
+
+    function install-selected-remote() {
+        if (root.det-files.length == 1) {
+            root.get-install(0);
+        } else if (root.det-files.length > 1) {
+            root.files-index = 0;
+            root.files-visible = true;
+        }
+    }
+
+    public function select-mod(i: int) {
+        if (root.mods.length == 0) {
+            return;
+        }
+        root.selected = max(0, min(root.mods.length - 1, i));
+        // Keep the selection on screen.
+        if (root.selected * Theme.row-height + modlist.content-y < 0) {
+            modlist.content-y = -root.selected * Theme.row-height;
+        }
+        if ((root.selected + 1) * Theme.row-height + modlist.content-y > modlist.visible-height) {
+            modlist.content-y = modlist.visible-height - (root.selected + 1) * Theme.row-height;
+        }
+    }
+
+    // Page order in the sidebar: Mods(0) Get mods(7) Install file(6)
+    // Conflicts(1) Loadouts(2) Backups(3) Doctor(4) Settings(5).
+    function next-page(dir: int) -> int {
+        if (!root.game-ok) {
+            return root.page == 4 ? 5 : 4;
+        }
+        if (dir > 0) {
+            return root.page == 0 ? 7 : root.page == 7 ? 6 : root.page == 6 ? 1 : root.page == 5 ? 0 : root.page + 1;
+        }
+        return root.page == 0 ? 5 : root.page == 7 ? 0 : root.page == 6 ? 7 : root.page == 1 ? 6 : root.page - 1;
+    }
+
+    // Controller action: "up" "down" "left" "right" "a" "b" "x" "y" "lb" "rb"
+    // "start" "select". Other pages' focus movement is done in Rust.
+    public function pad(a: string) {
+        root.pad-used = true;
+        if (root.install-running) {
+            if (a == "b") {
+                root.install-cancel();
+            }
+            return;
+        }
+        if (root.confirm-visible) {
+            if (a == "x" && root.confirm-alt != "") {
+                root.confirm-visible = false;
+                root.confirm-alt-accepted();
+            }
+            if (a == "a") {
+                root.confirm-visible = false;
+                root.confirm-accepted();
+            }
+            if (a == "b") {
+                root.confirm-visible = false;
+                root.confirm-cancelled();
+            }
+            return;
+        }
+        if (root.files-visible) {
+            if (a == "up" || a == "down") {
+                root.files-index = max(0, min(root.det-files.length - 1, root.files-index + (a == "up" ? -1 : 1)));
+            } else if (a == "a") {
+                root.files-visible = false;
+                root.get-install(root.files-index);
+            } else if (a == "b") {
+                root.files-visible = false;
+            }
+            return;
+        }
+        if (a == "lb" || a == "rb") {
+            root.move-mode = false;
+            root.go(root.next-page(a == "rb" ? 1 : -1));
+            return;
+        }
+        if (a == "select") {
+            if (root.game-ok) {
+                root.play();
+            }
+            return;
+        }
+        if (a == "start") {
+            if (root.can-undo && !root.busy) {
+                root.undo();
+            }
+            return;
+        }
+        if (root.page == 7) {
+            if (a == "up" || a == "down") {
+                root.select-remote(root.get-selected + (a == "up" ? -1 : 1));
+            } else if (a == "left" || a == "right") {
+                root.get-image(a == "left" ? -1 : 1);
+            } else if (a == "a") {
+                root.install-selected-remote();
+            } else if (a == "x") {
+                root.get-kind = mod(root.get-kind + 1, root.kind-names.length);
+                root.get-search();
+            } else if (a == "y") {
+                root.get-source = mod(root.get-source + 1, root.source-names.length);
+                root.get-search();
+            } else if (a == "b") {
+                root.go(0);
+            }
+            return;
+        }
+        if (root.page == 6) {
+            if (a == "b") {
+                root.browse-up();
+            } else if (a == "y") {
+                root.browse-go("downloads");
+            } else if (a == "a" && root.pad-index < root.browse-entries.length) {
+                root.browse-activate(root.browse-entries[root.pad-index].path, root.browse-entries[root.pad-index].kind);
+            } else if (a == "up" || a == "down") {
+                root.pad-index = max(0, min(root.browse-entries.length - 1, root.pad-index + (a == "up" ? -1 : 1)));
+            }
+            return;
+        }
+        if (root.page != 0) {
+            if (a == "b" && root.game-ok) {
+                root.go(0);
+                return;
+            }
+            // Lists (Loadouts, Backups) and scrolling pages (Conflicts, Doctor).
+            if (a == "up" || a == "down") {
+                let last = root.page == 2 ? root.loadouts.length - 1 : root.page == 3 ? root.backups.length - 1 : root.page == 1 ? root.conflict-files.length : root.page == 4 ? root.checks.length : 0;
+                root.pad-index = max(0, min(last, root.pad-index + (a == "up" ? -1 : 1)));
+                return;
+            }
+            if (root.busy) {
+                return;
+            }
+            if (root.page == 1 && a == "a") {
+                root.scan-conflicts();
+            }
+            if (root.page == 2) {
+                if (a == "y") {
+                    root.save-loadout-auto();
+                } else if (root.pad-index < root.loadouts.length) {
+                    if (a == "a") {
+                        root.apply-loadout(root.loadouts[root.pad-index].name);
+                    }
+                    if (a == "x") {
+                        root.delete-loadout(root.loadouts[root.pad-index].name);
+                    }
+                }
+            }
+            if (root.page == 3 && a == "a" && root.pad-index < root.backups.length) {
+                root.restore-backup(root.backups[root.pad-index].id);
+            }
+            if (root.page == 4 && a == "a") {
+                root.run-doctor();
+            }
+            if (root.page == 4 && a == "y" && root.armfix-visible && root.armfix-action != "") {
+                root.armfix-clicked();
+            }
+            if (root.page == 5 && a == "a") {
+                root.detect-game-dir();
+            }
+            if (root.page == 5 && a == "y") {
+                if (root.app-update-version != "") {
+                    root.app-update-clicked();
+                } else {
+                    root.app-update-check-now();
+                }
+            }
+            if (root.page == 5 && (a == "left" || a == "right")) {
+                root.theme = a == "right" ? (root.theme == 2 ? 0 : root.theme + 1) : (root.theme == 0 ? 2 : root.theme - 1);
+                root.theme-chosen(root.theme);
+            }
+            return;
+        }
+        if (a == "x") {
+            root.move-mode = !root.move-mode && root.sel-folder() != "";
+            return;
+        }
+        if (a == "y" && !root.move-mode) {
+            if (root.selected >= 0 && root.selected < root.mods.length && root.mods[root.selected].update) {
+                root.update-mod(root.sel-folder());
+            } else if (root.update-count > 0) {
+                root.update-all();
+            }
+            return;
+        }
+        if (a == "b") {
+            root.move-mode = false;
+            return;
+        }
+        if (a == "a") {
+            if (root.move-mode) {
+                root.move-mode = false;
+            } else if (root.sel-folder() != "") {
+                root.toggle(root.sel-folder());
+            }
+            return;
+        }
+        if (a == "up" || a == "down") {
+            if (root.move-mode) {
+                root.move(root.sel-folder(), a);
+            } else {
+                root.select-mod(root.selected + (a == "up" ? -1 : 1));
+            }
+            return;
+        }
+        if ((a == "left" || a == "right") && !root.move-mode) {
+            root.select-mod(root.selected + (a == "left" ? -8 : 8));
+        }
+    }
+
+    function sel-folder() -> string {
+        return root.selected >= 0 && root.selected < root.mods.length ? root.mods[root.selected].folder : "";
+    }
+
+    HorizontalLayout {
+        // ---- side navigation ----
+        Rectangle {
+            width: 220px;
+            background: Palette.alternate-background.transparentize(0.4);
+            VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+                Text {
+                    text: "Mega Mix+\nMod Manager";
+                    font-size: root.compact ? 16px : 20px;
+                    font-weight: 800;
+                    height: root.compact ? 44px : 70px;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+                BigButton {
+                    text: "▶  Play";
+                    primary: true;
+                    min-height: root.compact ? 44px : 56px;
+                    enabled: root.game-ok;
+                    clicked => {
+                        root.play();
+                    }
+                }
+                Rectangle {
+                    height: 6px;
+                }
+                NavButton {
+                    compact: root.compact;
+                    text: "Mods";
+                    active: root.page == 0;
+                    available: root.game-ok;
+                    clicked => {
+                        root.go(0);
+                    }
+                }
+                NavButton {
+                    compact: root.compact;
+                    text: "Get mods";
+                    active: root.page == 7;
+                    available: root.game-ok;
+                    clicked => {
+                        root.go(7);
+                    }
+                }
+                NavButton {
+                    compact: root.compact;
+                    text: "Install from file";
+                    active: root.page == 6;
+                    available: root.game-ok;
+                    clicked => {
+                        root.go(6);
+                    }
+                }
+                NavButton {
+                    compact: root.compact;
+                    text: "Conflicts";
+                    active: root.page == 1;
+                    available: root.game-ok;
+                    clicked => {
+                        root.go(1);
+                    }
+                }
+                NavButton {
+                    compact: root.compact;
+                    text: "Loadouts";
+                    active: root.page == 2;
+                    available: root.game-ok;
+                    clicked => {
+                        root.go(2);
+                    }
+                }
+                NavButton {
+                    compact: root.compact;
+                    text: "Backups";
+                    active: root.page == 3;
+                    available: root.game-ok;
+                    clicked => {
+                        root.go(3);
+                    }
+                }
+                NavButton {
+                    compact: root.compact;
+                    text: "Doctor";
+                    active: root.page == 4;
+                    clicked => {
+                        root.go(4);
+                    }
+                }
+                NavButton {
+                    compact: root.compact;
+                    text: "Settings";
+                    active: root.page == 5;
+                    clicked => {
+                        root.go(5);
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+                if root.app-update-version != "": BigButton {
+                    text: "Update app to " + root.app-update-version;
+                    primary: true;
+                    enabled: !root.busy;
+                    clicked => {
+                        root.app-update-clicked();
+                    }
+                }
+                BigButton {
+                    text: "Undo last change";
+                    enabled: root.can-undo && !root.busy;
+                    clicked => {
+                        root.undo();
+                    }
+                }
+            }
+        }
+
+        // ---- main area ----
+        VerticalLayout {
+            padding: 20px;
+            padding-bottom: 10px;
+            spacing: 12px;
+            horizontal-stretch: 1;
+
+            if root.loader-warning != "": Card {
+                height: lw.preferred-height;
+                background: Theme.error.transparentize(0.85);
+                border-color: Theme.error;
+                lw := HorizontalLayout {
+                    padding: 12px;
+                    spacing: 12px;
+                    Text {
+                        text: root.loader-warning;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    BigButton {
+                        text: "Turn mod loading on";
+                        clicked => {
+                            root.enable-loader();
+                        }
+                    }
+                }
+            }
+
+            pages := Rectangle {
+            vertical-stretch: 1;
+
+            // Mods (always present so the list keeps its scroll position)
+            HorizontalLayout {
+                visible: root.page == 0;
+                width: 100%;
+                height: 100%;
+                // Hidden on other pages: its minimum size mustn't widen them.
+                min-width: 0px;
+                spacing: 18px;
+                keys := FocusScope {
+                    horizontal-stretch: 3;
+                    init => {
+                        self.focus();
+                    }
+                    key-pressed(event) => {
+                        if (root.page != 0 || root.confirm-visible) {
+                            return reject;
+                        }
+                        if (event.text == Key.Escape && root.move-mode) {
+                            root.move-mode = false;
+                            return accept;
+                        }
+                        if (event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == " " || event.text == Key.Return) {
+                            if (!root.key-allowed()) {
+                                return accept;
+                            }
+                        }
+                        if (root.move-mode && (event.text == Key.UpArrow || event.text == Key.DownArrow)) {
+                            root.move(root.sel-folder(), event.text == Key.UpArrow ? "up" : "down");
+                            return accept;
+                        }
+                        if (root.move-mode && (event.text == " " || event.text == Key.Return)) {
+                            root.move-mode = false;
+                            return accept;
+                        }
+                        if (event.text == Key.UpArrow && event.modifiers.control) {
+                            root.move(root.sel-folder(), "up");
+                            return accept;
+                        }
+                        if (event.text == Key.DownArrow && event.modifiers.control) {
+                            root.move(root.sel-folder(), "down");
+                            return accept;
+                        }
+                        if (event.text == Key.UpArrow) {
+                            root.select-mod(root.selected - 1);
+                            return accept;
+                        }
+                        if (event.text == Key.DownArrow) {
+                            root.select-mod(root.selected + 1);
+                            return accept;
+                        }
+                        if (event.text == Key.PageUp) {
+                            root.select-mod(root.selected - 8);
+                            return accept;
+                        }
+                        if (event.text == Key.PageDown) {
+                            root.select-mod(root.selected + 8);
+                            return accept;
+                        }
+                        if (event.text == Key.Home) {
+                            root.select-mod(0);
+                            return accept;
+                        }
+                        if (event.text == Key.End) {
+                            root.select-mod(root.mods.length - 1);
+                            return accept;
+                        }
+                        if (event.text == " " || event.text == Key.Return) {
+                            if (root.sel-folder() != "") {
+                                root.toggle(root.sel-folder());
+                            }
+                            return accept;
+                        }
+                        reject
+                    }
+                    VerticalLayout {
+                        spacing: 10px;
+                        PageTitle {
+                            text: "Mods";
+                            Text {
+                                text: "\{root.loaded-count} of \{root.mod-count} will load";
+                                color: Theme.muted;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                min-width: 0px;
+                                horizontal-stretch: 1;
+                            }
+                            if root.update-count > 0: BigButton {
+                                text: "Update all (" + root.update-count + ")";
+                                primary: true;
+                                enabled: !root.install-running;
+                                clicked => {
+                                    root.update-all();
+                                    keys.focus();
+                                }
+                            }
+                            BigButton {
+                                text: "Auto-sort";
+                                enabled: !root.busy;
+                                clicked => {
+                                    root.auto-sort();
+                                    keys.focus();
+                                }
+                            }
+                            BigButton {
+                                text: root.checking-updates ? "Checking…" : root.width < 1200px ? "Updates" : "Check for updates";
+                                enabled: !root.checking-updates;
+                                clicked => {
+                                    root.check-updates();
+                                    keys.focus();
+                                }
+                            }
+                            BigButton {
+                                text: "Refresh";
+                                clicked => {
+                                    root.refresh();
+                                    keys.focus();
+                                }
+                            }
+                        }
+                        LineEdit {
+                            placeholder-text: "Search by name, folder or author";
+                            min-height: 44px;
+                            edited(text) => {
+                                root.search(text);
+                            }
+                            accepted => {
+                                keys.focus();
+                            }
+                        }
+                        Text {
+                            text: root.move-mode ? "Moving “" + root.mods[root.selected].name + "”: up/down to move it, A to drop." : "Top of the list wins when two mods change the same file.  Controller: A on/off · X pick up and move · LB/RB pages · Start undo.  Keys: ↑/↓, Space, Ctrl+↑/↓.";
+                            font-size: 13px;
+                            color: Theme.muted;
+                            wrap: word-wrap;
+                        }
+                        modlist := ListView {
+                            vertical-stretch: 1;
+                            for m[i] in root.mods: ModRowView {
+                                m: m;
+                                selected: i == root.selected;
+                                moving: root.move-mode && i == root.selected;
+                                select => {
+                                    if (i != root.selected) {
+                                        root.move-mode = false;
+                                    }
+                                    root.selected = i;
+                                    keys.focus();
+                                }
+                                toggle => {
+                                    root.toggle(m.folder);
+                                }
+                            }
+                        }
+                        if root.mods.length == 0: Text {
+                            text: "No mods found.";
+                            color: Theme.muted;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                // details
+                Card {
+                    width: root.width < 1200px ? 300px : 360px;
+                    if root.selected >= 0 && root.selected < root.mods.length: mod-scroll := ScrollView {
+                        // Wrap text to the visible width instead of scrolling sideways.
+                        content-width: self.visible-width;
+                        VerticalLayout {
+                            x: 0;
+                            width: mod-scroll.visible-width;
+                            padding: 18px;
+                            spacing: 12px;
+                            alignment: start;
+                            Text {
+                                text: root.mods[root.selected].name;
+                                font-size: 22px;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: (root.mods[root.selected].version != "" ? "Version " + root.mods[root.selected].version + "\n" : "") + (root.mods[root.selected].author != "" ? "By " + root.mods[root.selected].author + "\n" : "") + "Folder: " + root.mods[root.selected].folder;
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            if root.mods[root.selected].broken: Text {
+                                text: root.mods[root.selected].error;
+                                color: Theme.error;
+                                wrap: word-wrap;
+                            }
+                            if !root.mods[root.selected].broken && root.mods[root.selected].enabled && !root.mods[root.selected].loaded: Text {
+                                text: "Enabled, but missing from the load order, so DivaModLoader skips it.";
+                                color: Theme.warn;
+                                wrap: word-wrap;
+                            }
+                            if !root.mods[root.selected].broken && root.mods[root.selected].enabled && !root.mods[root.selected].loaded: BigButton {
+                                text: "Add missing mods to the load order";
+                                clicked => {
+                                    root.sync-priority();
+                                }
+                            }
+                            BigButton {
+                                text: root.mods[root.selected].enabled ? "Disable" : "Enable";
+                                primary: true;
+                                enabled: !root.mods[root.selected].broken && !root.busy;
+                                clicked => {
+                                    root.toggle(root.sel-folder());
+                                }
+                            }
+                            if root.mods[root.selected].update: BigButton {
+                                text: root.mods[root.selected].update-text + " · Update";
+                                primary: true;
+                                enabled: !root.install-running;
+                                clicked => {
+                                    root.update-mod(root.sel-folder());
+                                }
+                            }
+                            GridLayout {
+                                spacing: 8px;
+                                Row {
+                                    BigButton {
+                                        text: "↑ To top";
+                                        enabled: !root.busy;
+                                        clicked => {
+                                            root.move(root.sel-folder(), "top");
+                                        }
+                                    }
+                                    BigButton {
+                                        text: "↑ Up";
+                                        enabled: !root.busy;
+                                        clicked => {
+                                            root.move(root.sel-folder(), "up");
+                                        }
+                                    }
+                                }
+                                Row {
+                                    BigButton {
+                                        text: "↓ To bottom";
+                                        enabled: !root.busy;
+                                        clicked => {
+                                            root.move(root.sel-folder(), "bottom");
+                                        }
+                                    }
+                                    BigButton {
+                                        text: "↓ Down";
+                                        enabled: !root.busy;
+                                        clicked => {
+                                            root.move(root.sel-folder(), "down");
+                                        }
+                                    }
+                                }
+                            }
+                            if root.mods[root.selected].description != "": Text {
+                                text: root.mods[root.selected].description;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.mods[root.selected].files;
+                                font-size: 13px;
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "When auto-sorting";
+                                font-size: 13px;
+                                color: Theme.muted;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Button {
+                                    text: "Keep at top";
+                                    checkable: true;
+                                    checked: root.mods[root.selected].pin == 1;
+                                    clicked => {
+                                        root.set-pin(root.sel-folder(), root.mods[root.selected].pin == 1 ? 0 : 1);
+                                    }
+                                }
+                                Button {
+                                    text: "Keep at bottom";
+                                    checkable: true;
+                                    checked: root.mods[root.selected].pin == 2;
+                                    clicked => {
+                                        root.set-pin(root.sel-folder(), root.mods[root.selected].pin == 2 ? 0 : 2);
+                                    }
+                                }
+                            }
+                            if root.mod-settings.length > 0: Text {
+                                text: "Settings";
+                                font-size: 17px;
+                                font-weight: 600;
+                            }
+                            for s in root.mod-settings: VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: s.path;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    if s.kind == 0: Toggle {
+                                        on: s.value == "true";
+                                        active: !root.busy;
+                                        clicked => {
+                                            root.set-setting(root.sel-folder(), s.path, s.value == "true" ? "false" : "true");
+                                        }
+                                    }
+                                }
+                                if s.kind >= 1 && s.kind <= 3: HorizontalLayout {
+                                    spacing: 8px;
+                                    le := LineEdit {
+                                        text: s.value;
+                                        input-type: s.kind == 1 || s.kind == 2 ? InputType.decimal : InputType.text;
+                                        accepted => {
+                                            root.set-setting(root.sel-folder(), s.path, self.text);
+                                        }
+                                    }
+                                    Button {
+                                        text: "Save";
+                                        enabled: le.text != s.value;
+                                        clicked => {
+                                            root.set-setting(root.sel-folder(), s.path, le.text);
+                                        }
+                                    }
+                                }
+                                if s.kind == 4: Text {
+                                    text: s.value + "  (edit in the mod's config.toml)";
+                                    font-size: 13px;
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                                if s.comment != "": Text {
+                                    text: s.comment;
+                                    font-size: 13px;
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            // Mod page link (for update checks)
+                            if root.mods[root.selected].link != "": Text {
+                                text: root.mods[root.selected].link;
+                                font-size: 13px;
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            if root.mods[root.selected].link != "": HorizontalLayout {
+                                spacing: 8px;
+                                Button {
+                                    text: "Open mod page";
+                                    clicked => {
+                                        root.open-mod-page(root.sel-folder());
+                                    }
+                                }
+                                Button {
+                                    text: "Unlink";
+                                    clicked => {
+                                        root.unlink-mod(root.sel-folder());
+                                    }
+                                }
+                            }
+                            if root.mods[root.selected].link == "": Text {
+                                text: "Installed by hand? Paste its DivaModArchive or GameBanana page to get update checks:";
+                                font-size: 13px;
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            if root.mods[root.selected].link == "": HorizontalLayout {
+                                spacing: 8px;
+                                LineEdit {
+                                    text <=> root.link-input;
+                                    placeholder-text: "Mod page link, dma:123 or gb:123";
+                                    accepted => {
+                                        root.link-mod(root.sel-folder(), self.text);
+                                    }
+                                }
+                                Button {
+                                    text: "Link";
+                                    enabled: root.link-input != "";
+                                    clicked => {
+                                        root.link-mod(root.sel-folder(), root.link-input);
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                height: 8px;
+                            }
+                            Button {
+                                text: "Remove mod…";
+                                enabled: !root.busy && !root.install-running;
+                                clicked => {
+                                    root.remove-mod(root.sel-folder());
+                                }
+                            }
+                        }
+                    }
+                    if root.selected < 0 || root.selected >= root.mods.length: Text {
+                        text: "Select a mod";
+                        color: Theme.muted;
+                    }
+                }
+            }
+
+            // Install
+            if root.page == 6: VerticalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 10px;
+                PageTitle {
+                    text: "Install mods";
+                    BigButton {
+                        text: "Downloads";
+                        clicked => {
+                            root.browse-go("downloads");
+                        }
+                    }
+                    BigButton {
+                        text: "Home";
+                        clicked => {
+                            root.browse-go("home");
+                        }
+                    }
+                }
+                Text {
+                    text: "Pick a .zip, .7z or .rar mod file. Mods are unpacked on the same drive as the game, never in RAM, and the load order is backed up first.";
+                    wrap: word-wrap;
+                    color: Theme.muted;
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    LineEdit {
+                        text <=> root.install-path-input;
+                        placeholder-text: "Or paste the path of a mod file";
+                        min-height: 44px;
+                        accepted => {
+                            root.install-from-path(self.text);
+                        }
+                    }
+                    BigButton {
+                        text: "Install";
+                        enabled: root.install-path-input != "";
+                        clicked => {
+                            root.install-from-path(root.install-path-input);
+                        }
+                    }
+                }
+                Text {
+                    text: root.browse-dir;
+                    font-size: 13px;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+                if root.browse-message != "": Text {
+                    text: root.browse-message;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+                PadListView {
+                    vertical-stretch: 1;
+                    row-h: 54px;
+                    focus-index: root.pad-index;
+                    for e[i] in root.browse-entries: Rectangle {
+                        height: 54px;
+                        border-radius: Theme.radius;
+                        background: root.pad-used && i == root.pad-index ? Palette.accent-background.transparentize(0.7) : bta.has-hover ? Palette.alternate-background : transparent;
+                        bta := TouchArea {
+                            clicked => {
+                                root.pad-index = i;
+                                root.browse-activate(e.path, e.kind);
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 12px;
+                            VerticalLayout {
+                                alignment: center;
+                                Badge {
+                                    width: 70px;
+                                    text: e.kind == 0 ? "UP" : e.kind == 1 ? "FOLDER" : "MOD FILE";
+                                    tone: e.kind == 2 ? Palette.accent-background : Theme.muted;
+                                }
+                            }
+                            Text {
+                                text: e.name;
+                                font-size: 17px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                font-weight: e.kind == 2 ? 600 : 400;
+                            }
+                            Text {
+                                text: e.size;
+                                color: Theme.muted;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Get mods (DivaModArchive + GameBanana)
+            if root.page == 7: VerticalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    LineEdit {
+                        text <=> root.get-query;
+                        placeholder-text: "Search mods, or paste a mod page / one-click link";
+                        min-height: 44px;
+                        horizontal-stretch: 1;
+                        accepted => {
+                            root.get-search();
+                        }
+                    }
+                    BigButton {
+                        text: "Search";
+                        clicked => {
+                            root.get-search();
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    ComboBox {
+                        model: root.source-names;
+                        current-index <=> root.get-source;
+                        min-height: 40px;
+                        selected => {
+                            root.get-search();
+                        }
+                    }
+                    ComboBox {
+                        model: root.kind-names;
+                        current-index <=> root.get-kind;
+                        min-height: 40px;
+                        selected => {
+                            root.get-search();
+                        }
+                    }
+                    ComboBox {
+                        model: root.sort-names;
+                        current-index <=> root.get-sort;
+                        min-height: 40px;
+                        selected => {
+                            root.get-search();
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                    if root.get-loading: Text {
+                        text: "Loading…";
+                        color: Theme.muted;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.get-message != "": Text {
+                    text: root.get-message;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: 14px;
+                    // Results
+                    VerticalLayout {
+                    horizontal-stretch: 1;
+                    min-width: 300px;
+                    spacing: 6px;
+                    RemoteList {
+                        vertical-stretch: 1;
+                        results: root.get-results;
+                        selected: root.get-selected;
+                        clicked(i) => {
+                            root.get-selected = i;
+                            root.get-select(i);
+                        }
+                        activated(i) => {
+                            root.install-selected-remote();
+                        }
+                    }
+                    if root.get-more: BigButton {
+                        text: root.get-loading ? "Loading…" : "Load more";
+                        enabled: !root.get-loading;
+                        clicked => {
+                            root.get-load-more();
+                        }
+                    }
+                    }
+                    // Details
+                    Card {
+                        horizontal-stretch: 1;
+                        min-width: 320px;
+                        if !root.det-visible: Text {
+                            text: "Select a mod to see its details.";
+                            color: Theme.muted;
+                        }
+                        if root.det-visible: det-scroll := ScrollView {
+                            content-width: self.visible-width;
+                            VerticalLayout {
+                                x: 0;
+                                width: det-scroll.visible-width;
+                                padding: 14px;
+                                spacing: 10px;
+                                alignment: start;
+                                Rectangle {
+                                    height: self.width * 9 / 16;
+                                    border-radius: 8px;
+                                    clip: true;
+                                    background: Palette.background;
+                                    if root.det-has-image: Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: root.det-image;
+                                        image-fit: contain;
+                                    }
+                                    if !root.det-has-image: Text {
+                                        text: root.det-image-count == 0 ? "No pictures" : "Loading picture…";
+                                        color: Theme.muted;
+                                    }
+                                    if root.det-image-count > 1: Rectangle {
+                                        x: 8px;
+                                        y: (parent.height - 44px) / 2;
+                                        width: 44px;
+                                        height: 44px;
+                                        border-radius: 22px;
+                                        background: pta.has-hover ? #000000d0 : #00000099;
+                                        Text {
+                                            text: "‹";
+                                            color: white;
+                                            font-size: 30px;
+                                        }
+                                        pta := TouchArea {
+                                            clicked => {
+                                                root.get-image(-1);
+                                            }
+                                        }
+                                    }
+                                    if root.det-image-count > 1: Rectangle {
+                                        x: parent.width - 52px;
+                                        y: (parent.height - 44px) / 2;
+                                        width: 44px;
+                                        height: 44px;
+                                        border-radius: 22px;
+                                        background: nta.has-hover ? #000000d0 : #00000099;
+                                        Text {
+                                            text: "›";
+                                            color: white;
+                                            font-size: 30px;
+                                        }
+                                        nta := TouchArea {
+                                            clicked => {
+                                                root.get-image(1);
+                                            }
+                                        }
+                                    }
+                                    if root.det-image-count > 1: Rectangle {
+                                        x: (parent.width - 64px) / 2;
+                                        y: parent.height - 34px;
+                                        width: 64px;
+                                        height: 26px;
+                                        border-radius: 13px;
+                                        background: #000000b0;
+                                        Text {
+                                            text: (root.det-image-index + 1) + " / " + root.det-image-count;
+                                            color: white;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: root.det-name;
+                                    font-size: 21px;
+                                    font-weight: 700;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.det-meta;
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.det-stats;
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                                if root.det-installed != "": Text {
+                                    text: root.det-installed;
+                                    color: Theme.ok;
+                                    wrap: word-wrap;
+                                }
+                                if root.det-requires.length > 0 || root.det-incompat.length > 0: Rectangle {
+                                    border-radius: 8px;
+                                    border-width: 2px;
+                                    border-color: Theme.error;
+                                    background: Theme.error.transparentize(0.88);
+                                    height: reqs.preferred-height;
+                                    reqs := VerticalLayout {
+                                        padding: 10px;
+                                        spacing: 6px;
+                                        if root.det-requires.length > 0: Text {
+                                            text: "Requirements";
+                                            font-size: 17px;
+                                            font-weight: 700;
+                                            color: Theme.error;
+                                        }
+                                        for q[i] in root.det-requires: HorizontalLayout {
+                                            spacing: 8px;
+                                            Text {
+                                                text: (q.ok ? "✓ " : q.optional ? "○ " : "✗ ") + q.name + (q.ok ? " (installed)" : q.optional ? " (optional)" : " — not installed") + (q.note != "" && !q.optional ? " · " + q.note : "");
+                                                color: q.ok ? Theme.ok : q.optional ? Theme.muted : Theme.error;
+                                                font-weight: q.ok || q.optional ? 400 : 700;
+                                                wrap: word-wrap;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                            }
+                                            if !q.ok: Button {
+                                                text: q.web ? "Open" : "Show";
+                                                clicked => {
+                                                    root.get-open-req(i);
+                                                }
+                                            }
+                                        }
+                                        for w in root.det-incompat: Text {
+                                            text: "⚠ " + w;
+                                            color: Theme.error;
+                                            font-weight: 700;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    alignment: start;
+                                    Button {
+                                        text: "Open " + root.det-site + " page";
+                                        clicked => {
+                                            root.get-open-page();
+                                        }
+                                    }
+                                    if root.det-also != "": Button {
+                                        text: root.det-also;
+                                        clicked => {
+                                            root.get-open-also();
+                                        }
+                                    }
+                                }
+                                if root.det-loading: Text {
+                                    text: "Loading files…";
+                                    color: Theme.muted;
+                                }
+                                for f[i] in root.det-files: HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        horizontal-stretch: 1;
+                                        Text {
+                                            text: f.name;
+                                            overflow: elide;
+                                            font-weight: 600;
+                                        }
+                                        Text {
+                                            text: f.detail;
+                                            font-size: 13px;
+                                            color: Theme.muted;
+                                        }
+                                    }
+                                    BigButton {
+                                        text: f.action != "" ? f.action : root.det-installed != "" ? "Reinstall" : "Install";
+                                        primary: f.action == "";
+                                        enabled: !root.install-running;
+                                        clicked => {
+                                            root.get-install(i);
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: root.det-desc;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Conflicts
+            if root.page == 1: VerticalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 12px;
+                PageTitle {
+                    text: "Conflicts";
+                    BigButton {
+                        text: root.busy ? "Scanning…" : "Scan again";
+                        enabled: !root.busy;
+                        clicked => {
+                            root.scan-conflicts();
+                        }
+                    }
+                }
+                Text {
+                    text: root.conflicts-summary;
+                    wrap: word-wrap;
+                    color: Theme.muted;
+                }
+                for p in root.pairs: Card {
+                    height: 52px;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 8px;
+                        Text {
+                            text: p.winner;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "overrides";
+                            color: Theme.muted;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: p.loser;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: "\{p.files} file(s)";
+                            color: Theme.muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                ConflictFileList {
+                    vertical-stretch: 1;
+                    files: root.conflict-files;
+                    focus-index: root.pad-index - 1;
+                }
+            }
+
+            // Loadouts
+            if root.page == 2: VerticalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 12px;
+                PageTitle {
+                    text: "Loadouts";
+                }
+                Text {
+                    text: "A loadout remembers which mods are on and their order. Mods installed later are turned off when you apply an older loadout.";
+                    wrap: word-wrap;
+                    color: Theme.muted;
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    name := LineEdit {
+                        placeholder-text: "New loadout name";
+                        min-height: 44px;
+                        accepted => {
+                            if (self.text != "") {
+                                root.save-loadout(self.text);
+                                self.text = "";
+                            }
+                        }
+                    }
+                    BigButton {
+                        text: "Save current setup";
+                        enabled: name.text != "";
+                        clicked => {
+                            root.save-loadout(name.text);
+                            name.text = "";
+                        }
+                    }
+                }
+                PadListView {
+                    vertical-stretch: 1;
+                    row-h: 64px;
+                    focus-index: root.pad-index;
+                    for l[i] in root.loadouts: Rectangle {
+                        height: 64px;
+                        border-radius: Theme.radius;
+                        background: root.pad-used && i == root.pad-index ? Palette.accent-background.transparentize(0.7) : transparent;
+                        HorizontalLayout {
+                            padding: 6px;
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: l.name;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: l.summary;
+                                    font-size: 13px;
+                                    color: Theme.muted;
+                                }
+                            }
+                            BigButton {
+                                text: "Apply";
+                                primary: true;
+                                clicked => {
+                                    root.apply-loadout(l.name);
+                                }
+                            }
+                            BigButton {
+                                text: "Delete";
+                                clicked => {
+                                    root.delete-loadout(l.name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Backups
+            if root.page == 3: VerticalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 12px;
+                PageTitle {
+                    text: "Backups";
+                }
+                Text {
+                    text: "All configs are backed up before every change. Restoring backs up the current state first, so it can be undone too. Removed mods are kept, and come back when you undo (or restore the backup taken before removing them).";
+                    wrap: word-wrap;
+                    color: Theme.muted;
+                }
+                if root.removed-summary != "": HorizontalLayout {
+                    spacing: 10px;
+                    Text {
+                        text: root.removed-summary;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    BigButton {
+                        text: "Delete now";
+                        clicked => {
+                            root.purge-removed();
+                        }
+                    }
+                }
+                PadListView {
+                    vertical-stretch: 1;
+                    row-h: 60px;
+                    focus-index: root.pad-index;
+                    for b[i] in root.backups: Rectangle {
+                        height: 60px;
+                        border-radius: Theme.radius;
+                        background: root.pad-used && i == root.pad-index ? Palette.accent-background.transparentize(0.7) : transparent;
+                        HorizontalLayout {
+                            padding: 6px;
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: b.reason;
+                                    font-size: 17px;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: b.when;
+                                    font-size: 13px;
+                                    color: Theme.muted;
+                                }
+                            }
+                            BigButton {
+                                text: "Restore";
+                                clicked => {
+                                    root.restore-backup(b.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Doctor
+            if root.page == 4: VerticalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 12px;
+                PageTitle {
+                    text: "Doctor";
+                    BigButton {
+                        text: root.busy ? "Checking…" : "Check again";
+                        enabled: !root.busy;
+                        clicked => {
+                            root.run-doctor();
+                        }
+                    }
+                }
+                Text {
+                    text: root.doctor-summary;
+                    color: Theme.muted;
+                }
+                if root.armfix-visible: Card {
+                    height: af.preferred-height;
+                    af := HorizontalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.armfix-title;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.armfix-text;
+                                wrap: word-wrap;
+                                font-size: 14px;
+                                color: Theme.muted;
+                            }
+                        }
+                        if root.armfix-action != "": VerticalLayout {
+                            alignment: center;
+                            BigButton {
+                                text: root.armfix-action + (root.pad-used ? " (Y)" : "");
+                                enabled: !root.busy;
+                                clicked => {
+                                    root.armfix-clicked();
+                                }
+                            }
+                        }
+                    }
+                }
+                doc-scroll := PadScrollView {
+                    step: root.pad-index;
+                    vertical-stretch: 1;
+                    content-width: self.visible-width;
+                    VerticalLayout {
+                        x: 0;
+                        width: doc-scroll.visible-width;
+                        spacing: 8px;
+                        alignment: start;
+                        for c in root.checks: Card {
+                            height: cl.preferred-height;
+                            cl := HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+                                VerticalLayout {
+                                    alignment: start;
+                                    Badge {
+                                        width: 64px;
+                                        text: c.level == 0 ? "OK" : c.level == 1 ? "INFO" : c.level == 2 ? "WARN" : "ERROR";
+                                        tone: c.level == 0 ? Theme.ok : c.level == 1 ? Theme.info : c.level == 2 ? Theme.warn : Theme.error;
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Text {
+                                        text: c.summary;
+                                        wrap: word-wrap;
+                                        font-weight: 600;
+                                    }
+                                    if c.details != "": Text {
+                                        text: c.details;
+                                        wrap: word-wrap;
+                                        font-size: 14px;
+                                        color: Theme.muted;
+                                    }
+                                    if c.fix != "": Text {
+                                        text: c.fix;
+                                        wrap: word-wrap;
+                                        font-size: 14px;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Settings
+            if root.page == 5: set-scroll := ScrollView {
+                width: 100%;
+                height: 100%;
+                content-width: self.visible-width;
+                VerticalLayout {
+                    x: 0;
+                    width: set-scroll.visible-width;
+                    spacing: 14px;
+                    alignment: start;
+                    PageTitle {
+                        text: "Settings";
+                    }
+                    Text {
+                        text: "Game folder";
+                        font-size: 18px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.game-ok ? "Using: " + root.game-path : "The game folder wasn't found. Enter it below (the folder that contains DivaMegaMix.exe).";
+                        wrap: word-wrap;
+                        color: root.game-ok ? Theme.muted : Theme.warn;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        LineEdit {
+                            text <=> root.game-dir-input;
+                            placeholder-text: "Folder that contains DivaMegaMix.exe";
+                            min-height: 44px;
+                            min-width: 120px;
+                            preferred-width: 200px;
+                            horizontal-stretch: 1;
+                            accepted => {
+                                root.use-game-dir(self.text);
+                            }
+                        }
+                        BigButton {
+                            text: "Use this folder";
+                            clicked => {
+                                root.use-game-dir(root.game-dir-input);
+                            }
+                        }
+                        BigButton {
+                            text: "Find through Steam";
+                            clicked => {
+                                root.detect-game-dir();
+                            }
+                        }
+                    }
+                    if root.settings-message != "": Text {
+                        text: root.settings-message;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Theme";
+                        font-size: 18px;
+                        font-weight: 600;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        BigButton {
+                            text: "System";
+                            primary: root.theme == 0;
+                            clicked => {
+                                root.theme = 0;
+                                root.theme-chosen(0);
+                            }
+                        }
+                        BigButton {
+                            text: "Dark";
+                            primary: root.theme == 1;
+                            clicked => {
+                                root.theme = 1;
+                                root.theme-chosen(1);
+                            }
+                        }
+                        BigButton {
+                            text: "Light";
+                            primary: root.theme == 2;
+                            clicked => {
+                                root.theme = 2;
+                                root.theme-chosen(2);
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Mods on both sites";
+                        font-size: 18px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: "Many mods are on both DivaModArchive and GameBanana. Search shows them once, from this site:";
+                        wrap: word-wrap;
+                        color: Theme.muted;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        BigButton {
+                            text: "DivaModArchive";
+                            primary: root.prefer-site == 0;
+                            clicked => {
+                                root.prefer-site = 0;
+                                root.prefer-site-chosen(0);
+                            }
+                        }
+                        BigButton {
+                            text: "GameBanana";
+                            primary: root.prefer-site == 1;
+                            clicked => {
+                                root.prefer-site = 1;
+                                root.prefer-site-chosen(1);
+                            }
+                        }
+                    }
+                    Text {
+                        text: "App updates";
+                        font-size: 18px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: "This is version " + root.app-version + ". " + (root.app-update-note != "" ? root.app-update-note : root.app-updates-on ? "New versions are looked for on GitHub once a day." : "Not looking for new versions.");
+                        wrap: word-wrap;
+                        color: Theme.muted;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        BigButton {
+                            text: "Check daily";
+                            primary: root.app-updates-on;
+                            clicked => {
+                                root.app-updates-on = true;
+                                root.app-updates-toggled(true);
+                            }
+                        }
+                        BigButton {
+                            text: "Don't check";
+                            primary: !root.app-updates-on;
+                            clicked => {
+                                root.app-updates-on = false;
+                                root.app-updates-toggled(false);
+                            }
+                        }
+                        BigButton {
+                            text: root.app-update-version != "" ? "Update to " + root.app-update-version : "Check now";
+                            enabled: !root.busy;
+                            clicked => {
+                                if (root.app-update-version != "") {
+                                    root.app-update-clicked();
+                                } else {
+                                    root.app-update-check-now();
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "One-click install links";
+                        font-size: 18px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.links-ours ? "The “One Click Install” buttons on DivaModArchive and GameBanana open this app." : "Make the “One Click Install” buttons on DivaModArchive and GameBanana open this app (replaces another mod manager that uses them).";
+                        wrap: word-wrap;
+                        color: Theme.muted;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        BigButton {
+                            text: root.links-ours ? "Set up again" : "Use this app for one-click links";
+                            clicked => {
+                                root.register-links();
+                            }
+                        }
+                    }
+                    Text {
+                        text: "About";
+                        font-size: 18px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: "Mega Mix+ Mod Manager for DivaModLoader. Free software under the MIT or Apache-2.0 license.\nMuch of this program's code was written with an AI assistant (Claude) and reviewed and tested by the author.";
+                        wrap: word-wrap;
+                        color: Theme.muted;
+                    }
+                    AboutSlint {
+                        height: 160px;
+                    }
+                }
+            }
+
+            }
+
+            // ---- status bar ----
+            HorizontalLayout {
+                height: 32px;
+                spacing: 10px;
+                Text {
+                    text: root.status-text;
+                    color: root.status-error ? Theme.error : Theme.muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    // A long message must not make the window wider.
+                    min-width: 0px;
+                }
+                if root.pad-used: Text {
+                    text: root.confirm-visible ? (root.confirm-alt != "" ? "A " + root.confirm-accept + " · X " + root.confirm-alt + " · B cancel" : "A confirm · B cancel")
+                        : root.page == 0 ? (root.move-mode ? "Up/down move · A drop · B cancel" : root.update-count > 0 ? "A on/off · X move · Y update · LB/RB pages · Select play · Start undo" : "A on/off · X move · LB/RB pages · Select play · Start undo")
+                        : root.install-running ? "B cancel"
+                        : root.files-visible ? "Up/down choose · A install · B cancel"
+                        : root.page == 7 ? "Up/down select · A install · Left/right pictures · X type · Y site · B back"
+                        : root.page == 6 ? "Up/down select · A open/install · B up a folder · Y Downloads"
+                        : root.page == 1 ? "Up/down scroll · A scan · B back"
+                        : root.page == 2 ? "Up/down select · A apply · X delete · Y save current · B back"
+                        : root.page == 3 ? "Up/down select · A restore · B back"
+                        : root.page == 4 ? "Up/down scroll · A check again · B back"
+                        : "Left/right theme · A find game through Steam · B back";
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: Palette.accent-background;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                    min-width: 0px;
+                }
+                if !root.pad-used: Text {
+                    text: root.game-path;
+                    font-size: 12px;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-alignment: right;
+                    max-width: 420px;
+                    min-width: 0px;
+                }
+            }
+        }
+    }
+
+    if root.confirm-visible: ConfirmOverlay {
+        width: root.width;
+        height: root.height;
+        title: root.confirm-title;
+        body: root.confirm-body;
+        accept-text: root.confirm-accept;
+        alt-text: root.confirm-alt;
+        warning: root.confirm-warning;
+        accepted => {
+            root.confirm-visible = false;
+            root.confirm-warning = "";
+            root.confirm-accepted();
+        }
+        alt-accepted => {
+            root.confirm-visible = false;
+            root.confirm-alt-accepted();
+        }
+        cancelled => {
+            root.confirm-visible = false;
+            root.confirm-warning = "";
+            root.confirm-cancelled();
+        }
+    }
+
+    if root.files-visible: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #000000a0;
+        TouchArea {
+            clicked => {
+                root.files-visible = false;
+            }
+        }
+        Card {
+            width: min(620px, root.width - 40px);
+            height: min(fl.preferred-height, root.height - 40px);
+            background: Palette.background;
+            TouchArea { }
+            fl := VerticalLayout {
+                padding: 24px;
+                spacing: 10px;
+                Text {
+                    text: "Which file of “" + root.det-name + "”?";
+                    font-size: 22px;
+                    font-weight: 700;
+                    wrap: word-wrap;
+                }
+                for f[i] in root.det-files: Rectangle {
+                    height: 56px;
+                    border-radius: Theme.radius;
+                    background: i == root.files-index ? Palette.accent-background.transparentize(0.7) : fta.has-hover ? Palette.alternate-background : transparent;
+                    fta := TouchArea {
+                        clicked => {
+                            root.files-visible = false;
+                            root.get-install(i);
+                        }
+                    }
+                    VerticalLayout {
+                        padding-left: 10px;
+                        alignment: center;
+                        Text {
+                            text: f.name;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: f.detail;
+                            font-size: 13px;
+                            color: Theme.muted;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    BigButton {
+                        text: "Cancel";
+                        clicked => {
+                            root.files-visible = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.install-running: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #000000a0;
+        TouchArea { }
+        Card {
+            width: min(600px, root.width - 40px);
+            height: pl.preferred-height;
+            background: Palette.background;
+            pl := VerticalLayout {
+                padding: 24px;
+                spacing: 14px;
+                Text {
+                    text: root.install-title;
+                    font-size: 22px;
+                    font-weight: 700;
+                    wrap: word-wrap;
+                }
+                ProgressIndicator {
+                    height: 10px;
+                    progress: root.install-progress;
+                    indeterminate: root.install-progress <= 0;
+                }
+                Text {
+                    text: root.install-detail;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    BigButton {
+                        text: "Cancel";
+                        clicked => {
+                            root.install-cancel();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

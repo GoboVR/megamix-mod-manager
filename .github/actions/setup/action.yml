@@ -1,0 +1,25 @@
+name: Set up Rust
+description: Rust toolchain, Linux build libraries and the cargo cache
+runs:
+  using: composite
+  steps:
+    - name: Linux build libraries
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -yq --no-install-recommends pkg-config libudev-dev libfontconfig1-dev libfreetype-dev file
+    - name: Install rustup (Windows ARM64 runners don't have it)
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      shell: pwsh
+      run: |
+        if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+          Invoke-WebRequest https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+          .\rustup-init.exe -y --default-toolchain none --profile minimal
+          Remove-Item rustup-init.exe
+          "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        }
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - uses: Swatinem/rust-cache@v2

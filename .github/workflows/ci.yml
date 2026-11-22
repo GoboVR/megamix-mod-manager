@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test:
+    name: test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-22.04 }
+          - { name: linux-arm64, os: ubuntu-22.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+          - { name: windows-arm64, os: windows-11-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Clippy
+        if: matrix.name == 'linux-x86_64'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Format
+        if: matrix.name == 'linux-x86_64'
+        run: cargo fmt --all --check

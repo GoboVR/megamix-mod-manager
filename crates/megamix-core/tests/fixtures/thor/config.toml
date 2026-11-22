@@ -1,0 +1,4 @@
+enabled = true
+console = true
+mods = "mods"
+priority = ["LyricsPatch", "ExPatch"]

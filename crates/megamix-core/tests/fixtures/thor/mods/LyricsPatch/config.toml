@@ -1,0 +1,9 @@
+enabled = true
+#include = ["roms"]
+dll = ["LyricsPatch.dll"]
+
+name = "LyricsPatch"
+description = "Arbitrary length lyrics in multiple lines with optional TOML file support."
+version = "1.1.1"
+date = "23.08.2024"
+author = "Jay"
