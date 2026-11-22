@@ -25,7 +25,8 @@ use crate::remote::RemoteFile;
 
 pub const REPO: &str = "GoboVR/megamix-mod-manager";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
-const CHECK_TTL: Duration = Duration::from_secs(6 * 3600);
+// Short: a saved "newest is X" answer hides a release published since.
+const CHECK_TTL: Duration = Duration::from_secs(3600);
 
 pub fn releases_page() -> String {
     format!("https://github.com/{REPO}/releases/latest")
