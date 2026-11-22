@@ -43,7 +43,7 @@ jobs:
           # Portable zip for people who don't want an installer.
           $zip = "dist/megamix-${{ matrix.name }}-portable.zip"
           Compress-Archive -Path dist/bin/*, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath $zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.name }}
           path: |
@@ -58,7 +58,7 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: windows-*
           path: artifacts
@@ -82,7 +82,7 @@ jobs:
             & $iscc /Qp "/DArch=$($a.arch)" "/DVersion=${{ steps.v.outputs.version }}" "/DBinDir=$bin" packaging/windows/megamix.iss
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: windows-installers
           path: dist/*.exe
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
       - name: Collect files
