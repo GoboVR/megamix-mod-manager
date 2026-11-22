@@ -1,0 +1,3 @@
+# Test samples are real config files: keep their exact bytes (LF or CRLF)
+# on every OS, or the round-trip tests compare the wrong thing.
+crates/megamix-core/tests/fixtures/** -text
