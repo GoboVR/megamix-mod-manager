@@ -109,12 +109,18 @@ pub fn check(game: &Game, m: &RemoteMod) -> Compat {
         .collect();
     let notices = m.notices.clone().unwrap_or_default();
     // "… ExPatch must be installed to access these songs."
+    let mut notice_conflicts: Vec<(Option<ModRef>, &crate::dma::PageNeed)> = Vec::new();
     for need in notices.needs.iter().filter(|n| !n.name.is_empty()) {
-        let r = need.post.map(|id| ModRef {
-            site: Site::Dma,
-            id,
-            file: None,
-        });
+        let r = page_ref(need.post, need.url.as_deref());
+        match need.kind {
+            crate::dma::NeedKind::Required => {}
+            // "… it will not work properly with that mod": checked below.
+            crate::dma::NeedKind::Incompatible => {
+                notice_conflicts.push((r, need));
+                continue;
+            }
+            crate::dma::NeedKind::Info => continue,
+        }
         let note = need_note(&need.text);
         if let Some(q) = requirements
             .iter_mut()
@@ -130,8 +136,8 @@ pub fn check(game: &Game, m: &RemoteMod) -> Compat {
         requirements.push(ReqState {
             name: need.name.clone(),
             installed: find_installed(game, r.as_ref(), &need.name),
+            url: if r.is_none() { need.url.clone() } else { None },
             r,
-            url: need.url.clone(),
             note,
             optional: false,
         });
@@ -145,6 +151,19 @@ pub fn check(game: &Game, m: &RemoteMod) -> Compat {
         .collect();
     let named: Vec<(String, String)> = others.iter().map(|(f, n)| (n.clone(), f.clone())).collect();
     let mut incompatible = crate::sort::known_incompatibilities(&m.name, "", &named);
+
+    // Site notices like "… it will not work properly with Future Tone
+    // Customization": a problem only if that mod is installed.
+    for (r, need) in notice_conflicts {
+        if let Some(folder) = find_installed(game, r.as_ref(), &need.name)
+            && norm(&folder) != own
+        {
+            let msg = format!("The site says: “{}” — you have {folder}.", need.text);
+            if !incompatible.contains(&msg) {
+                incompatible.push(msg);
+            }
+        }
+    }
 
     // Sentences on the page like "not compatible with the Eden Project".
     let text = m.description.replace(['\r'], "");
@@ -183,11 +202,7 @@ pub fn check(game: &Game, m: &RemoteMod) -> Compat {
         if c.post == Some(m.id) && m.site == Site::Dma {
             continue;
         }
-        let r = c.post.map(|id| ModRef {
-            site: Site::Dma,
-            id,
-            file: None,
-        });
+        let r = page_ref(c.post, c.link.as_deref());
         if r.is_none() && c.source.contains('+') {
             continue; // "MM+": the base game
         }
@@ -230,15 +245,30 @@ pub fn check(game: &Game, m: &RemoteMod) -> Compat {
 /// "…do not have a hard chart, ExPatch must…" → "for songs with no hard chart".
 fn need_note(text: &str) -> String {
     let low = text.to_lowercase();
-    if let Some(i) = low.find("do not have a") {
-        let rest = &text[i + "do not have a".len()..];
+    if let Some(i) = low.find("do not have ") {
+        let rest = &text[i + "do not have ".len()..];
         let what = rest.split(',').next().unwrap_or("").trim();
-        let what = what.strip_prefix("n ").unwrap_or(what).trim();
+        let what = what
+            .strip_prefix("an ")
+            .or_else(|| what.strip_prefix("a "))
+            .unwrap_or(what)
+            .trim();
         if !what.is_empty() {
             return format!("needed for songs with no {what}");
         }
     }
     "the site says it's needed".into()
+}
+
+/// A mod page from a notice: a DivaModArchive post, or a link that is a
+/// mod page on either site (GameBanana `…/mods/<id>`).
+fn page_ref(post: Option<u64>, link: Option<&str>) -> Option<ModRef> {
+    post.map(|id| ModRef {
+        site: Site::Dma,
+        id,
+        file: None,
+    })
+    .or_else(|| link.and_then(crate::remote::parse_ref))
 }
 
 #[cfg(test)]
@@ -343,6 +373,7 @@ mod tests {
             other_name: String::new(),
             source: source.into(),
             post,
+            link: None,
         };
         let mut m = page(
             "Halloween Pack",
@@ -352,12 +383,14 @@ mod tests {
         m.notices = Some(PageNotices {
             needs: vec![
                 PageNeed {
+                    kind: crate::dma::NeedKind::Required,
                     text: "This mod contains songs that do not have a hard chart, ExPatch must be installed to access these songs.".into(),
                     name: "ExPatch".into(),
                     post: None,
                     url: Some("https://github.com/nastys/ExPatch/releases/latest".into()),
                 },
                 PageNeed {
+                    kind: crate::dma::NeedKind::Required,
                     text: "This mod contains songs that do not have an arcade chart, New Classics must be installed.".into(),
                     name: "New Classics".into(),
                     post: Some(169),
@@ -390,6 +423,67 @@ mod tests {
                 .contains("as lavverso, which you have: 8227 Song 8227, 8249 Song 8249."),
             "{}",
             c.incompatible[0]
+        );
+    }
+
+    #[test]
+    fn incompatible_notice_is_a_warning_not_a_requirement() {
+        use crate::dma::{NeedKind, PageNeed, PageNotices};
+        let notices = PageNotices {
+            needs: vec![
+                PageNeed {
+                    kind: NeedKind::Incompatible,
+                    text: "This mod adds modules that do not have Future Tone Customization compatiable sprites, it will not work properly with that mod.".into(),
+                    name: "Future Tone Customization".into(),
+                    post: Some(266),
+                    url: None,
+                },
+                PageNeed {
+                    kind: NeedKind::Required,
+                    text: "This mod contains songs that do not have modern DML-style thumbnail sprites, ThumbnailSplitter must be installed to show these sprites.".into(),
+                    name: "ThumbnailSplitter".into(),
+                    post: None,
+                    url: Some("https://gamebanana.com/mods/625557".into()),
+                },
+            ],
+            conflicts: vec![],
+        };
+        let mut m = page("Project DIVA X Song Pack", "", vec![]);
+        m.notices = Some(notices);
+
+        // Without Future Tone Customization: no warning, and it's not a requirement.
+        let t = fake_game(
+            &["Splitter"],
+            &[("Splitter", "name = \"ThumbnailSplitter\"\n")],
+        );
+        let g = Game::open(t.path()).unwrap();
+        let c = check(&g, &m);
+        assert_eq!(c.requirements.len(), 1, "{:?}", c.requirements);
+        let ts = &c.requirements[0];
+        assert_eq!(ts.name, "ThumbnailSplitter");
+        assert_eq!(ts.installed.as_deref(), Some("Splitter"));
+        assert_eq!(
+            ts.r.map(|r| (r.site, r.id)),
+            Some((Site::GameBanana, 625557))
+        );
+        assert_eq!(ts.url, None, "opens in the app, not the browser");
+        assert_eq!(
+            ts.note,
+            "needed for songs with no modern DML-style thumbnail sprites"
+        );
+        assert!(c.incompatible.is_empty(), "{:?}", c.incompatible);
+
+        // With it installed: a warning.
+        let t = fake_game(
+            &["FTC"],
+            &[("FTC", "name = \"Future Tone Customization\"\n")],
+        );
+        let g = Game::open(t.path()).unwrap();
+        let c = check(&g, &m);
+        assert_eq!(c.incompatible.len(), 1, "{:?}", c.incompatible);
+        assert!(
+            c.incompatible[0].contains("will not work properly")
+                && c.incompatible[0].contains("you have FTC")
         );
     }
 }

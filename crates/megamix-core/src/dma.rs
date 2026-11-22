@@ -243,6 +243,9 @@ pub struct PageNotices {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageNeed {
+    /// What the sentence says about the linked mod.
+    #[serde(default)]
+    pub kind: NeedKind,
     /// The whole sentence.
     pub text: String,
     /// The linked mod's name ("ExPatch", "New Classics").
@@ -251,6 +254,51 @@ pub struct PageNeed {
     pub post: Option<u64>,
     /// Otherwise the link (GitHub releases, …).
     pub url: Option<String>,
+}
+
+/// How a notice relates to the mod it links to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedKind {
+    /// "… X must be installed …"
+    #[default]
+    Required,
+    /// "… it will not work properly with that mod."
+    Incompatible,
+    /// Anything else: shown on the site, not acted on.
+    Info,
+}
+
+/// Sort a notice sentence into [`NeedKind`].
+pub fn classify(text: &str) -> NeedKind {
+    let t = text.to_lowercase();
+    let bad = [
+        "not work",
+        "won't work",
+        "incompatib",
+        "not compatible",
+        "conflicts with",
+        "do not use",
+        "don't use",
+        "break",
+    ];
+    if bad.iter().any(|w| t.contains(w)) {
+        return NeedKind::Incompatible;
+    }
+    let need = [
+        "must be installed",
+        "needs to be installed",
+        "is required",
+        "are required",
+        "required to",
+        "requires",
+        "must be enabled",
+    ];
+    if need.iter().any(|w| t.contains(w)) {
+        NeedKind::Required
+    } else {
+        NeedKind::Info
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +314,10 @@ pub struct PageConflict {
     /// The other post's name, or e.g. "MM+" for the base game.
     pub source: String,
     pub post: Option<u64>,
+    /// Link to the other mod when it isn't a DivaModArchive post
+    /// (e.g. a GameBanana page in "Reserved" tables).
+    #[serde(default)]
+    pub link: Option<String>,
 }
 
 impl PageNotices {
@@ -319,6 +371,7 @@ pub fn parse_notices(html: &str) -> PageNotices {
                     None => (String::new(), None, None),
                 };
                 out.needs.push(PageNeed {
+                    kind: classify(&text),
                     text,
                     name,
                     post,
@@ -331,7 +384,7 @@ pub fn parse_notices(html: &str) -> PageNotices {
 }
 
 fn parse_tables(body: &str, sure: bool, out: &mut Vec<PageConflict>) {
-    // Each section: <h6 …>PVs:</h6><table>…<tbody><tr><td>…</table>
+    // Each section: <h6 …>PVs:</h6><table><thead><tr><th>ID<th>…<tbody><tr…><td>…</table>
     for part in body.split("<h6").skip(1) {
         let Some(gt) = part.find('>') else { continue };
         let rest = &part[gt + 1..];
@@ -342,24 +395,61 @@ fn parse_tables(body: &str, sure: bool, out: &mut Vec<PageConflict>) {
         let Some(tb) = rest.find("<tbody>") else {
             continue;
         };
+        let headers: Vec<String> = rest[..tb]
+            .split("<th>")
+            .skip(1)
+            .map(|h| clean(h).to_lowercase())
+            .collect();
+        // "Conflict source" in song tables; "Reserved …" tables have
+        // ID / Name / Label / User instead, with the other mod linked in Label.
+        let source_col = headers.iter().position(|h| h.contains("source"));
         let table = &rest[tb + 7..rest.find("</table>").unwrap_or(rest.len())];
-        for row in table.split("<tr>").map(str::trim).filter(|r| !r.is_empty()) {
-            let cells: Vec<&str> = row.split("<td>").skip(1).collect();
-            if cells.len() < 4 {
+        for row in table.split("<tr").skip(1) {
+            let Some(gt) = row.find('>') else { continue };
+            let cells: Vec<&str> = row[gt + 1..].split("<td>").skip(1).collect();
+            if cells.len() < 2 {
                 continue;
             }
-            let post = first_link(cells[3]).and_then(|(href, _)| {
-                href.trim_start_matches(BASE)
+            let cell = |i: usize| cells.get(i).map(|c| clean(c)).unwrap_or_default();
+            let (source, href) = match source_col.and_then(|i| cells.get(i)) {
+                Some(c) => (clean(c), first_link(c).map(|(h, _)| h)),
+                None => {
+                    // The first link in the row names the other mod.
+                    let Some((i, (h, link_text))) = cells
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, c)| first_link(c).map(|l| (i, l)))
+                    else {
+                        continue;
+                    };
+                    let text = clean(cells[i]).replace(&link_text, "");
+                    let label = text.trim().trim_end_matches(['-', ':']).trim();
+                    let name = if label.is_empty() {
+                        link_text
+                    } else {
+                        label.to_owned()
+                    };
+                    (name, Some(h))
+                }
+            };
+            let post = href.as_deref().and_then(|h| {
+                h.trim_start_matches(BASE)
                     .strip_prefix("/post/")
+                    .and_then(|n| n.split(['/', '?', '#']).next())
                     .and_then(|n| n.parse().ok())
             });
             out.push(PageConflict {
                 sure,
                 section: section.clone(),
-                id: clean(cells[0]),
-                name: clean(cells[1]),
-                other_name: clean(cells[2]),
-                source: clean(cells[3]),
+                id: cell(0),
+                name: cell(1),
+                other_name: if source_col.is_some() {
+                    cell(2)
+                } else {
+                    String::new()
+                },
+                source,
+                link: if post.is_none() { href } else { None },
                 post,
             });
         }
@@ -515,6 +605,33 @@ mod tests {
         );
 
         assert!(parse_notices("<html><div class=\"col-md-7\">x</div>").is_empty());
+
+        // Project DIVA X Song Pack (post 158): one "doesn't work with", one
+        // "must be installed" (a GameBanana link), and a Reserved table.
+        let x = r#"<div class="alert alert-danger mb-0"><p>This mod adds modules that do not have <a href=/post/266>Future Tone Customization</a> compatiable sprites, it will not work properly with that mod.<p>This mod contains songs that do not have modern DML-style thumbnail sprites, <a href=https://gamebanana.com/mods/625557>ThumbnailSplitter</a> must be installed to show these sprites.</div><div class="alert alert-danger mb-0"><button type=button><h5 class=mb-0>This mod conflicts with the following:</h5></button><div id=reservationConflicts><h6 class=mt-2>Reserved Customize Items:</h6><table class="table table-sm m-0"><thead><tr><th>ID<th>Name<th>Label<th>User<tbody><tr id=CstmItem1300><td>1300<td><td>Ivy Tomcat Hair - Eden Project Module Pack <a href=https://gamebanana.com/mods/456470>https://gamebanana.com/mods/456470</a><td>testsnake</table></div></div><div class="col-md-7 card">"#;
+        let n = parse_notices(x);
+        assert_eq!(n.needs[0].kind, NeedKind::Incompatible);
+        assert_eq!(
+            (n.needs[0].name.as_str(), n.needs[0].post),
+            ("Future Tone Customization", Some(266))
+        );
+        assert_eq!(n.needs[1].kind, NeedKind::Required);
+        assert_eq!(
+            n.needs[1].url.as_deref(),
+            Some("https://gamebanana.com/mods/625557")
+        );
+        assert_eq!(n.conflicts.len(), 1);
+        let c = &n.conflicts[0];
+        assert_eq!(
+            (c.section.as_str(), c.id.as_str()),
+            ("Reserved Customize Items", "1300")
+        );
+        assert_eq!(c.source, "Ivy Tomcat Hair - Eden Project Module Pack");
+        assert_eq!(
+            c.link.as_deref(),
+            Some("https://gamebanana.com/mods/456470")
+        );
+        assert_eq!(c.post, None);
     }
 
     #[test]

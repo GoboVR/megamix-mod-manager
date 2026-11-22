@@ -238,7 +238,12 @@ pub fn info(s: &str, json: bool) -> Result<()> {
     }
     if let Some(n) = &m.notices {
         for need in &n.needs {
-            println!("  ! {}", need.text);
+            let tag = match need.kind {
+                megamix_core::dma::NeedKind::Required => "Needs",
+                megamix_core::dma::NeedKind::Incompatible => "Doesn't work with",
+                megamix_core::dma::NeedKind::Info => "Note",
+            };
+            println!("  {tag} {}: {}", need.name, need.text);
         }
         for sure in [true, false] {
             let rows: Vec<_> = n.conflicts.iter().filter(|c| c.sure == sure).collect();
