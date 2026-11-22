@@ -2943,7 +2943,7 @@ dependencies = [
 
 [[package]]
 name = "megamix"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2958,7 +2958,7 @@ dependencies = [
 
 [[package]]
 name = "megamix-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -2986,7 +2986,7 @@ dependencies = [
 
 [[package]]
 name = "megamix-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "dirs",
